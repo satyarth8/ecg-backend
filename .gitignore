@@ -1,0 +1,22 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+
+# Environment
+.env
+
+# Session logs
+logs/*.csv
+logs/*.log
+
+# MIT-BIH demo data
+demo_data/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
