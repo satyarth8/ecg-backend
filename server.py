@@ -26,6 +26,8 @@ import time
 import logging
 from pathlib import Path
 
+import requests
+
 from dotenv import load_dotenv
 load_dotenv()   # loads .env from the directory where server.py lives
 
@@ -62,6 +64,12 @@ app.config["SECRET_KEY"] = _flask_secret
 # RPi unique identifier (maps this device to a room/patient in MongoDB)
 EDGE_DEVICE_ID = os.getenv("EDGE_DEVICE_ID", "rpi-room-unknown")
 
+# Cloud API settings for RPi edge server
+CLOUD_API_URL = os.getenv("CLOUD_API_URL")
+EDGE_KEY = os.getenv("EDGE_KEY")
+if not CLOUD_API_URL or not EDGE_KEY:
+    log.warning("CLOUD_API_URL or EDGE_KEY not set in .env — will not upload to cloud")
+
 # Use threading mode (works on Windows without gevent install issues)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading",
                     logger=False, engineio_logger=False)
@@ -69,12 +77,54 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading",
 # ── Global State ──────────────────────────────────────────────────────────
 engine        = None
 push_thread   = None
+cloud_thread  = None
 push_running  = False
 engine_lock   = threading.Lock()
 
 PUSH_INTERVAL = 0.20   # seconds — push to browser every 200ms
 ECG_DISPLAY_POINTS = 500  # last N samples sent to browser (~5s at ~100Hz display)
+cloud_queue   = queue.Queue(maxsize=1000)
 
+# ══════════════════════════════════════════════════════════════════════════
+# Cloud Upload Loop
+# ══════════════════════════════════════════════════════════════════════════
+
+def _post_to_cloud(endpoint: str, data: dict, retries: int = 3):
+    """POST data to the Render cloud API with basic retry logic."""
+    if not CLOUD_API_URL or not EDGE_KEY:
+        return
+
+    url = f"{CLOUD_API_URL.rstrip('/')}/api/ingest/{endpoint}"
+    headers = {"X-Edge-Key": EDGE_KEY}
+
+    for attempt in range(retries):
+        try:
+            resp = requests.post(url, json=data, headers=headers, timeout=5.0)
+            resp.raise_for_status()
+            log.debug(f"Successfully posted {endpoint} to cloud.")
+            return True
+        except requests.RequestException as e:
+            log.warning(f"Cloud upload failed ({endpoint}) attempt {attempt+1}/{retries}: {e}")
+            if attempt < retries - 1:
+                time.sleep(5)  # Render cold start might take a moment
+    
+    log.error(f"Failed to post {endpoint} to cloud after {retries} attempts.")
+    return False
+
+def cloud_upload_loop():
+    """Background thread to pop from cloud_queue and POST to Render."""
+    global push_running
+    while push_running or not cloud_queue.empty():
+        try:
+            task = cloud_queue.get(timeout=1.0)
+            endpoint = task.get("endpoint")
+            data = task.get("data")
+            if endpoint and data:
+                 _post_to_cloud(endpoint, data)
+        except queue.Empty:
+            continue
+        except Exception as e:
+            log.error(f"Cloud upload loop error: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════
 # Background push loop — runs in its own thread
@@ -103,7 +153,15 @@ def push_data_loop():
                     "features"  : {k: round(float(v), 2) if isinstance(v, (int, float)) else v
                                    for k, v in features.items()},
                     "status"    : status,
+                    "patient_id": eng.patient_id if hasattr(eng, "patient_id") else None
                 })
+                
+                # Check for new cloud upload tasks from engine
+                if hasattr(eng, "get_cloud_tasks"):
+                    tasks = eng.get_cloud_tasks()
+                    for task in tasks:
+                        if not cloud_queue.full():
+                            cloud_queue.put(task)
 
         except Exception as e:
             log.warning(f"Push error: {e}")
@@ -123,7 +181,7 @@ def index():
 # ── API: Start Engine ─────────────────────────────────────────────────────
 @app.route("/api/start", methods=["POST"])
 def api_start():
-    global engine, push_thread, push_running
+    global engine, push_thread, cloud_thread, push_running
 
     data      = request.get_json() or {}
     demo_mode = data.get("demo_mode", True)
@@ -144,6 +202,23 @@ def api_start():
         else:
             new_engine = ECGInferenceEngine(port=port, demo_mode=False)
             log.info(f"Starting with hardware on {port}.")
+            
+        # ── Lookup Patient ID from MongoDB ─────────────────────────
+        try:
+            from database import collections
+            device_doc = collections.devices.find_one({"device_id": EDGE_DEVICE_ID})
+            if device_doc and device_doc.get("room_number"):
+                room_number = device_doc["room_number"]
+                patient_doc = collections.patients.find_one({"assigned_room": room_number})
+                if patient_doc:
+                    new_engine.patient_id = str(patient_doc["_id"])
+                    log.info(f"Assigned patient {new_engine.patient_id} to engine.")
+                else:
+                    log.warning(f"No patient assigned to room {room_number}.")
+            else:
+                 log.warning(f"Device {EDGE_DEVICE_ID} not registered or has no room assigned.")
+        except Exception as e:
+            log.error(f"Failed to lookup patient from MongoDB: {e}")
 
         new_engine.start()
 
@@ -156,6 +231,12 @@ def api_start():
             push_thread  = threading.Thread(target=push_data_loop,
                                              name="PushThread", daemon=True)
             push_thread.start()
+            
+            # Start cloud upload thread if configured
+            if CLOUD_API_URL and EDGE_KEY:
+                cloud_thread = threading.Thread(target=cloud_upload_loop,
+                                                name="CloudUploadThread", daemon=True)
+                cloud_thread.start()
 
         return jsonify({"ok": True, "mode": "demo" if demo_mode else "hardware", "port": port})
 

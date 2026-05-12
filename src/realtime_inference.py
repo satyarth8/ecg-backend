@@ -103,11 +103,15 @@ class ECGInferenceEngine:
         baud        : Baud rate (default 115200)
         demo_mode   : If True, use demo_stream instead of serial port
         demo_stream : EcgSimulator instance (provides same interface as serial)
+        device_id   : Unique identifier for this edge node (e.g. "rpi-room-101")
+        patient_id  : MongoDB ObjectId string of the patient assigned to this device
         """
         self.port        = port
         self.baud        = baud
         self.demo_mode   = demo_mode
         self.demo_stream = demo_stream
+        self.device_id   = os.getenv("EDGE_DEVICE_ID", "rpi-room-unknown")
+        self.patient_id  = None # Will be resolved by server.py on startup
 
         # ── Load ML Model & Scaler ────────────────────────────────────
         model_path  = MODEL_DIR / "ecg_rf_model_v1.pkl"
@@ -148,6 +152,9 @@ class ECGInferenceEngine:
 
         # ── Raw sample queue (between reader ↔ inference thread) ──────
         self._raw_queue : queue.Queue = queue.Queue(maxsize=QUEUE_MAXSIZE)
+
+        # ── Cloud task queue (consumed by server.py) ──────────────────
+        self._cloud_task_queue : queue.Queue = queue.Queue(maxsize=1000)
 
         # ── Calibration ───────────────────────────────────────────────
         self._calibrating        : bool  = False
@@ -215,6 +222,16 @@ class ECGInferenceEngine:
     def get_status(self) -> str:
         with self._lock:
             return self._status
+
+    def get_cloud_tasks(self) -> List[Dict]:
+        """Returns and clears pending cloud upload tasks."""
+        tasks = []
+        while not self._cloud_task_queue.empty():
+            try:
+                tasks.append(self._cloud_task_queue.get_nowait())
+            except queue.Empty:
+                break
+        return tasks
 
     # ── Serial Reader Thread ─────────────────────────────────────────────
 
@@ -430,6 +447,43 @@ class ECGInferenceEngine:
                 "consecutive_count": consecutive,
                 "timestamp"        : ts_str,
             }
+
+        # ── Queue Cloud Upload Tasks ──────────────────────────────────
+        if self.patient_id and self.device_id:
+            end_time = datetime.utcnow()
+            start_time = end_time - pd.Timedelta(seconds=WINDOW_SECONDS)
+            
+            summary_payload = {
+                "patient_id": self.patient_id,
+                "device_id": self.device_id,
+                "start_time": start_time.isoformat() + "Z",
+                "end_time": end_time.isoformat() + "Z",
+                "heart_rate": features.get("heart_rate"),
+                "rr_mean": features.get("rr_mean"),
+                "rr_std": features.get("rr_std"),
+                "sdnn": features.get("sdnn"),
+                "rmssd": features.get("rmssd"),
+                "beat_variance": features.get("beat_variance"),
+                "r_peak_count": features.get("r_peak_count"),
+                "sqi": features.get("sqi"),
+                "prediction": label,
+                "probability": float(prob_abnormal),
+                "consecutive_count": consecutive
+            }
+            if not self._cloud_task_queue.full():
+                self._cloud_task_queue.put({"endpoint": "summary", "data": summary_payload})
+
+            if consecutive >= ALERT_CONSECUTIVE and is_abnormal:
+                 alert_payload = {
+                     "patient_id": self.patient_id,
+                     "device_id": self.device_id,
+                     "severity": "HIGH",
+                     "consecutive_count": consecutive,
+                     "probability": float(prob_abnormal)
+                 }
+                 if not self._cloud_task_queue.full():
+                    self._cloud_task_queue.put({"endpoint": "alert", "data": alert_payload})
+
 
         # ── Log to CSV ────────────────────────────────────────────────
         feature_vals = ",".join(str(features.get(c, 0)) for c in FEATURE_COLUMNS)
