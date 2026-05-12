@@ -21,6 +21,7 @@ Then open: http://localhost:5000  (or http://<rpi-hostname>.local:5000)
 
 import sys
 import os
+import queue
 import threading
 import time
 import logging
