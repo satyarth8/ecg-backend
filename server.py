@@ -24,6 +24,7 @@ import os
 import threading
 import time
 import logging
+import queue
 from pathlib import Path
 
 import requests
@@ -283,7 +284,7 @@ def api_status():
         eng = engine
     running = eng is not None
     status  = eng.get_status() if eng else "STOPPED"
-    return jsonify({"running": running, "status": status})
+    return jsonify({"running": running, "status": status, "device_id": EDGE_DEVICE_ID})
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -311,4 +312,4 @@ if __name__ == "__main__":
     print(f"  Device ID : {EDGE_DEVICE_ID}")
     print("  Open      : http://localhost:5000")
     print("=" * 55)
-    socketio.run(app, host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+    socketio.run(app, host="0.0.0.0", port=5000, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)

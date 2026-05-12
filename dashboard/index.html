@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ECG Edge Monitor</title>
+  <meta name="description" content="Real-time ECG waveform and prediction dashboard for the RPi edge device." />
+
+  <!-- Socket.IO (loaded from CDN so no build step needed on RPi) -->
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+
+  <!-- Chart.js for waveform -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+
+  <!-- Google Font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ── Reset & Base ───────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #0d1117;
+      --surface:     #161b22;
+      --surface2:    #1c2333;
+      --border:      rgba(255,255,255,0.08);
+      --accent:      #00d4aa;
+      --accent-dim:  rgba(0,212,170,0.15);
+      --danger:      #ff4d6d;
+      --danger-dim:  rgba(255,77,109,0.15);
+      --warn:        #fbbf24;
+      --warn-dim:    rgba(251,191,36,0.15);
+      --text:        #e6edf3;
+      --text-muted:  #7d8590;
+      --radius:      12px;
+      --radius-sm:   8px;
+      --glow:        0 0 20px rgba(0,212,170,0.25);
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ── Layout ─────────────────────────────────────────────────── */
+    .app {
+      display: grid;
+      grid-template-rows: 56px 1fr;
+      grid-template-columns: 1fr;
+      min-height: 100vh;
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 0 16px 24px;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 4px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .logo-pulse {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+      animation: pulse-ring 2s ease-in-out infinite;
+    }
+    @keyframes pulse-ring {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50%       { transform: scale(1.4); opacity: 0.6; }
+    }
+
+    .logo-text {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      color: var(--text);
+    }
+    .logo-text span { color: var(--accent); }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    #conn-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 500;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-muted);
+      transition: all 0.3s;
+    }
+    #conn-badge.connected {
+      border-color: rgba(0,212,170,0.4);
+      color: var(--accent);
+      background: var(--accent-dim);
+    }
+    #conn-badge .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    /* ── Control Buttons ─────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--surface2);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn:hover  { background: var(--surface); border-color: rgba(255,255,255,0.2); }
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #0d1117;
+    }
+    .btn.primary:hover { filter: brightness(1.1); }
+    .btn.danger {
+      background: var(--danger-dim);
+      border-color: rgba(255,77,109,0.4);
+      color: var(--danger);
+    }
+    .btn.danger:hover { background: rgba(255,77,109,0.25); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Main Grid ───────────────────────────────────────────────── */
+    main {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 16px;
+      padding-top: 16px;
+    }
+
+    /* ── Status Bar ──────────────────────────────────────────────── */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .status-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+    .status-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); }
+    .status-chip.running { border-color: rgba(0,212,170,0.4); color: var(--accent); background: var(--accent-dim); }
+    .status-chip.running .dot { background: var(--accent); }
+    .status-chip.anomaly { border-color: rgba(255,77,109,0.4); color: var(--danger); background: var(--danger-dim); animation: blink-border 1s ease-in-out infinite; }
+    .status-chip.anomaly .dot { background: var(--danger); }
+    @keyframes blink-border { 0%,100% { opacity:1 } 50% { opacity:0.5 } }
+
+    #engine-status { font-size: 13px; color: var(--text-muted); margin-left: auto; font-family: 'JetBrains Mono', monospace; }
+
+    /* ── Chart Card ──────────────────────────────────────────────── */
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      position: relative;
+      overflow: hidden;
+    }
+    .chart-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      opacity: 0;
+      transition: opacity 0.4s;
+    }
+    .chart-card.active::before { opacity: 1; }
+
+    .chart-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .chart-title { font-size: 13px; font-weight: 600; color: var(--text-muted); letter-spacing: 0.5px; text-transform: uppercase; }
+    #hr-display {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 28px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+    #hr-display .unit { font-size: 13px; color: var(--text-muted); margin-left: 4px; }
+
+    #ecg-chart { width: 100%; }
+
+    /* ── Bottom Grid ─────────────────────────────────────────────── */
+    .bottom-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+    }
+    @media (max-width: 768px) {
+      .bottom-grid { grid-template-columns: 1fr; }
+    }
+
+    /* ── Info Card ───────────────────────────────────────────────── */
+    .info-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+    .info-card-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-muted);
+      margin-bottom: 14px;
+    }
+
+    /* Prediction Box */
+    #prediction-box {
+      text-align: center;
+      padding: 12px 0;
+    }
+    #pred-label {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    #pred-conf {
+      font-size: 13px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .pred-normal  { color: var(--accent) !important; }
+    .pred-anomaly { color: var(--danger) !important; }
+    .pred-warn    { color: var(--warn)   !important; }
+
+    /* Feature Rows */
+    .feature-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 7px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .feature-row:last-child { border-bottom: none; }
+    .feature-name  { font-size: 12px; color: var(--text-muted); }
+    .feature-value { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; color: var(--text); }
+
+    /* Patient / Device Info */
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 7px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { font-size: 12px; color: var(--text-muted); }
+    .info-val   { font-size: 12px; font-weight: 500; color: var(--text); font-family: 'JetBrains Mono', monospace; }
+
+    /* ── Demo Mode Banner ────────────────────────────────────────── */
+    #demo-banner {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      background: var(--warn-dim);
+      border: 1px solid rgba(251,191,36,0.3);
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      color: var(--warn);
+      font-weight: 500;
+    }
+    #demo-banner.show { display: flex; }
+
+    /* ── Scrollbar ───────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Header ──────────────────────────────────────────────────── -->
+  <header>
+    <div class="header-left">
+      <div class="logo-pulse"></div>
+      <span class="logo-text">ECG <span>Edge</span> Monitor</span>
+    </div>
+    <div class="header-right">
+      <div id="conn-badge">
+        <span class="dot"></span>
+        <span id="conn-text">Disconnected</span>
+      </div>
+      <button id="btn-start" class="btn primary" onclick="startEngine()">▶ Start</button>
+      <button id="btn-stop"  class="btn danger"  onclick="stopEngine()" disabled>■ Stop</button>
+      <button id="btn-cal"   class="btn"          onclick="calibrate()"  disabled>⚙ Calibrate</button>
+    </div>
+  </header>
+
+  <!-- ── Main ────────────────────────────────────────────────────── -->
+  <main>
+
+    <!-- Status Bar -->
+    <div class="status-bar">
+      <div id="chip-engine" class="status-chip"><span class="dot"></span><span id="chip-engine-text">Engine Stopped</span></div>
+      <div id="chip-pred"   class="status-chip"><span class="dot"></span><span id="chip-pred-text">No Prediction</span></div>
+      <div id="demo-banner">⚠ DEMO MODE — simulated data</div>
+      <span id="engine-status">—</span>
+    </div>
+
+    <!-- ECG Chart -->
+    <div class="chart-card" id="chart-card">
+      <div class="chart-header">
+        <span class="chart-title">ECG Waveform (Lead II)</span>
+        <div>
+          <span id="hr-display">—<span class="unit">bpm</span></span>
+        </div>
+      </div>
+      <canvas id="ecg-chart" height="180"></canvas>
+    </div>
+
+    <!-- Bottom Grid -->
+    <div class="bottom-grid">
+
+      <!-- Prediction -->
+      <div class="info-card">
+        <div class="info-card-title">Prediction</div>
+        <div id="prediction-box">
+          <div id="pred-label">—</div>
+          <div id="pred-conf">confidence: —</div>
+        </div>
+      </div>
+
+      <!-- Features -->
+      <div class="info-card">
+        <div class="info-card-title">Heart Features</div>
+        <div id="features-list">
+          <div class="feature-row"><span class="feature-name">RR Interval</span><span class="feature-value" id="feat-rr">—</span></div>
+          <div class="feature-row"><span class="feature-name">QRS Duration</span><span class="feature-value" id="feat-qrs">—</span></div>
+          <div class="feature-row"><span class="feature-name">PR Interval</span><span class="feature-value" id="feat-pr">—</span></div>
+          <div class="feature-row"><span class="feature-name">QT Interval</span><span class="feature-value" id="feat-qt">—</span></div>
+          <div class="feature-row"><span class="feature-name">ST Elevation</span><span class="feature-value" id="feat-st">—</span></div>
+        </div>
+      </div>
+
+      <!-- Device Info -->
+      <div class="info-card">
+        <div class="info-card-title">Device Info</div>
+        <div>
+          <div class="info-row"><span class="info-label">Device ID</span><span class="info-val" id="info-device">—</span></div>
+          <div class="info-row"><span class="info-label">Patient ID</span><span class="info-val" id="info-patient">—</span></div>
+          <div class="info-row"><span class="info-label">Last Update</span><span class="info-val" id="info-ts">—</span></div>
+          <div class="info-row"><span class="info-label">Samples</span><span class="info-val" id="info-samples">0</span></div>
+          <div class="info-row"><span class="info-label">Server</span><span class="info-val">localhost:5000</span></div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<script>
+// ── Chart Setup ──────────────────────────────────────────────────────────
+const MAX_POINTS = 500;
+const labels = Array(MAX_POINTS).fill('');
+const ecgData = Array(MAX_POINTS).fill(null);
+
+const ctx = document.getElementById('ecg-chart').getContext('2d');
+const ecgChart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels,
+    datasets: [{
+      data: ecgData,
+      borderColor: '#00d4aa',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0.1,
+      fill: false,
+    }]
+  },
+  options: {
+    animation: false,
+    responsive: true,
+    maintainAspectRatio: true,
+    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    scales: {
+      x: { display: false },
+      y: {
+        grid: { color: 'rgba(255,255,255,0.05)' },
+        ticks: { color: '#7d8590', font: { size: 10, family: 'JetBrains Mono' } },
+        border: { color: 'rgba(255,255,255,0.08)' }
+      }
+    }
+  }
+});
+
+// ── Socket.IO ────────────────────────────────────────────────────────────
+const socket = io();
+let sampleCount = 0;
+let isDemoMode  = false;
+
+socket.on('connect', () => {
+  document.getElementById('conn-badge').classList.add('connected');
+  document.getElementById('conn-text').textContent = 'Connected';
+});
+
+socket.on('disconnect', () => {
+  document.getElementById('conn-badge').classList.remove('connected');
+  document.getElementById('conn-text').textContent = 'Disconnected';
+});
+
+socket.on('update', (payload) => {
+  const { ecg, prediction, features, status, patient_id } = payload;
+
+  // ── ECG waveform ───────────────────────────────────────────────────
+  if (Array.isArray(ecg) && ecg.length > 0) {
+    const slice = ecg.slice(-MAX_POINTS);
+    ecgChart.data.datasets[0].data = slice;
+    ecgChart.data.labels = Array(slice.length).fill('');
+    ecgChart.update('none');
+    sampleCount += ecg.length;
+    document.getElementById('info-samples').textContent = sampleCount.toLocaleString();
+    document.getElementById('chart-card').classList.add('active');
+  }
+
+  // ── Status ─────────────────────────────────────────────────────────
+  if (status) {
+    document.getElementById('engine-status').textContent = status;
+    const isRunning = status !== 'STOPPED' && status !== 'IDLE';
+    const chip = document.getElementById('chip-engine');
+    chip.classList.toggle('running', isRunning);
+    document.getElementById('chip-engine-text').textContent = isRunning ? 'Engine Running' : 'Engine Stopped';
+  }
+
+  // ── Prediction ─────────────────────────────────────────────────────
+  if (prediction) {
+    const label = prediction.label || prediction.class || '—';
+    const conf  = prediction.confidence != null
+                  ? (parseFloat(prediction.confidence) * 100).toFixed(1) + '%'
+                  : '—';
+
+    const predEl = document.getElementById('pred-label');
+    predEl.textContent = label;
+
+    // Color coding
+    const lc = label.toLowerCase();
+    predEl.className = '';
+    if (lc.includes('normal') || lc === 'n') {
+      predEl.classList.add('pred-normal');
+    } else if (lc.includes('anomaly') || lc === 'a' || lc.includes('afib') || lc.includes('vt')) {
+      predEl.classList.add('pred-anomaly');
+    } else {
+      predEl.classList.add('pred-warn');
+    }
+
+    document.getElementById('pred-conf').textContent = `confidence: ${conf}`;
+
+    // Prediction status chip
+    const chipPred = document.getElementById('chip-pred');
+    const isAnomaly = predEl.classList.contains('pred-anomaly');
+    chipPred.classList.toggle('anomaly', isAnomaly);
+    document.getElementById('chip-pred-text').textContent = label;
+  }
+
+  // ── Features ───────────────────────────────────────────────────────
+  if (features) {
+    const set = (id, key, unit='') => {
+      const el = document.getElementById(id);
+      const val = features[key];
+      el.textContent = val != null ? `${val}${unit}` : '—';
+    };
+    set('feat-rr',  'rr_interval',   ' ms');
+    set('feat-qrs', 'qrs_duration',  ' ms');
+    set('feat-pr',  'pr_interval',   ' ms');
+    set('feat-qt',  'qt_interval',   ' ms');
+    set('feat-st',  'st_elevation',  ' mV');
+
+    // HR from features or prediction
+    const hr = features.heart_rate || features.hr;
+    if (hr != null) document.getElementById('hr-display').innerHTML = `${Math.round(hr)}<span class="unit">bpm</span>`;
+  }
+
+  // ── Patient ────────────────────────────────────────────────────────
+  if (patient_id) document.getElementById('info-patient').textContent = patient_id;
+
+  // ── Timestamp ──────────────────────────────────────────────────────
+  const now = new Date();
+  document.getElementById('info-ts').textContent =
+    now.toLocaleTimeString('en-GB', { hour12: false });
+});
+
+// ── Fetch device ID from /api/status ────────────────────────────────────
+async function loadDeviceInfo() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    document.getElementById('info-device').textContent = d.device_id || 'PI';
+  } catch (_) {}
+}
+loadDeviceInfo();
+
+// ── Controls ─────────────────────────────────────────────────────────────
+async function startEngine() {
+  isDemoMode = true; // default to demo on local dev
+  document.getElementById('demo-banner').classList.add('show');
+
+  const r = await fetch('/api/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ demo_mode: true })
+  });
+  const d = await r.json();
+
+  if (d.ok) {
+    document.getElementById('btn-start').disabled = true;
+    document.getElementById('btn-stop').disabled  = false;
+    document.getElementById('btn-cal').disabled   = false;
+  } else {
+    alert('Failed to start engine: ' + (d.error || 'Unknown error'));
+  }
+}
+
+async function stopEngine() {
+  await fetch('/api/stop', { method: 'POST' });
+  document.getElementById('btn-start').disabled = false;
+  document.getElementById('btn-stop').disabled  = true;
+  document.getElementById('btn-cal').disabled   = true;
+  document.getElementById('demo-banner').classList.remove('show');
+  document.getElementById('chart-card').classList.remove('active');
+  document.getElementById('engine-status').textContent = '—';
+}
+
+async function calibrate() {
+  const r = await fetch('/api/calibrate', { method: 'POST' });
+  const d = await r.json();
+  if (!d.ok) alert('Calibrate failed: ' + (d.error || 'Engine not running'));
+}
+</script>
+</body>
+</html>
