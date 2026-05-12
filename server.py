@@ -1,18 +1,21 @@
 """
 server.py
 ─────────────────────────────────────────────────────────────────────────────
-Flask + Socket.IO backend for the ECG Anomaly Detection Dashboard.
+Flask + Socket.IO backend — RPi EDGE server.
 
-Replaces Streamlit with a proper real-time web server.
-- Serves the HTML dashboard from dashboard/index.html
-- Pushes ECG data to browser every 200ms via WebSocket (Socket.IO)
-- REST API endpoints for start / stop / calibrate
+- Serves the local HTML dashboard (dashboard/index.html)
+- Pushes ECG waveform + predictions to the browser every 200ms via Socket.IO
+- REST API: /api/start  /api/stop  /api/calibrate  /api/status
+- Reads MONGO_URI, FLASK_SECRET_KEY, EDGE_DEVICE_ID from .env (via python-dotenv)
 
-Run:
-    cd E:\\Project\\ECG_Project
+Run (RPi):
+    source ~/ecg_env/bin/activate
     python server.py
 
-Then open: http://localhost:5000
+Run (dev):
+    python server.py
+
+Then open: http://localhost:5000  (or http://<rpi-hostname>.local:5000)
 ─────────────────────────────────────────────────────────────────────────────
 """
 
@@ -22,6 +25,9 @@ import threading
 import time
 import logging
 from pathlib import Path
+
+from dotenv import load_dotenv
+load_dotenv()   # loads .env from the directory where server.py lives
 
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
@@ -45,7 +51,16 @@ app = Flask(
     template_folder=str(ROOT_DIR / "dashboard"),
     static_folder=str(ROOT_DIR / "dashboard"),
 )
-app.config["SECRET_KEY"] = "ecg_secret_2026"
+
+# Read from .env — never hardcode secrets in source code
+_flask_secret = os.getenv("FLASK_SECRET_KEY")
+if not _flask_secret:
+    log.warning("FLASK_SECRET_KEY not set in .env — using insecure default (dev only!)")
+    _flask_secret = "ecg_dev_fallback_secret_CHANGE_ME"
+app.config["SECRET_KEY"] = _flask_secret
+
+# RPi unique identifier (maps this device to a room/patient in MongoDB)
+EDGE_DEVICE_ID = os.getenv("EDGE_DEVICE_ID", "rpi-room-unknown")
 
 # Use threading mode (works on Windows without gevent install issues)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading",
@@ -211,7 +226,8 @@ def on_disconnect():
 
 if __name__ == "__main__":
     print("=" * 55)
-    print("  ECG Anomaly Detection — Web Server")
-    print("  Open: http://localhost:5000")
+    print("  ECG Edge Server (RPi)")
+    print(f"  Device ID : {EDGE_DEVICE_ID}")
+    print("  Open      : http://localhost:5000")
     print("=" * 55)
     socketio.run(app, host="0.0.0.0", port=5000, debug=False, use_reloader=False)

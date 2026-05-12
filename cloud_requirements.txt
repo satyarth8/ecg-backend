@@ -1,0 +1,22 @@
+# cloud_requirements.txt
+# ─────────────────────────────────────────────────────────────────────────────
+# Dependencies for cloud_api.py ONLY (deployed on Render free tier).
+#
+# INTENTIONALLY excludes heavy RPi-only packages:
+#   - scipy      (ML signal processing — not needed on Render)
+#   - scikit-learn (RF model — stays on RPi)
+#   - joblib     (model loading — stays on RPi)
+#   - pyserial   (ESP32 serial port — stays on RPi)
+#   - wfdb       (MIT-BIH demo data — stays on RPi)
+#   - numpy      (heavy C extension — not needed for thin REST API)
+#
+# Render build time with this file: ~30s (vs ~4min with full requirements.txt)
+# ─────────────────────────────────────────────────────────────────────────────
+
+flask>=3.0.0
+flask-cors>=4.0.0
+pymongo>=4.6.0
+python-dotenv>=1.0.0
+PyJWT>=2.8.0
+bcrypt>=4.1.0
+gunicorn>=21.0.0
