@@ -439,13 +439,14 @@
 
       <!-- Features -->
       <div class="info-card">
-        <div class="info-card-title">Heart Features</div>
+        <div class="info-card-title">HRV Features</div>
         <div id="features-list">
-          <div class="feature-row"><span class="feature-name">RR Interval</span><span class="feature-value" id="feat-rr">—</span></div>
-          <div class="feature-row"><span class="feature-name">QRS Duration</span><span class="feature-value" id="feat-qrs">—</span></div>
-          <div class="feature-row"><span class="feature-name">PR Interval</span><span class="feature-value" id="feat-pr">—</span></div>
-          <div class="feature-row"><span class="feature-name">QT Interval</span><span class="feature-value" id="feat-qt">—</span></div>
-          <div class="feature-row"><span class="feature-name">ST Elevation</span><span class="feature-value" id="feat-st">—</span></div>
+          <div class="feature-row"><span class="feature-name">RR Mean</span><span class="feature-value" id="feat-rr-mean">—</span></div>
+          <div class="feature-row"><span class="feature-name">RR Std</span><span class="feature-value" id="feat-rr-std">—</span></div>
+          <div class="feature-row"><span class="feature-name">SDNN</span><span class="feature-value" id="feat-sdnn">—</span></div>
+          <div class="feature-row"><span class="feature-name">RMSSD</span><span class="feature-value" id="feat-rmssd">—</span></div>
+          <div class="feature-row"><span class="feature-name">Beat Variance</span><span class="feature-value" id="feat-beat-var">—</span></div>
+          <div class="feature-row"><span class="feature-name">SQI</span><span class="feature-value" id="feat-sqi">—</span></div>
         </div>
       </div>
 
@@ -571,20 +572,27 @@ socket.on('update', (payload) => {
 
   // ── Features ───────────────────────────────────────────────────────
   if (features) {
-    const set = (id, key, unit='') => {
+    const set = (id, key, unit='', decimals=1) => {
       const el = document.getElementById(id);
       const val = features[key];
-      el.textContent = val != null ? `${val}${unit}` : '—';
+      if (val != null && val !== 0) {
+        el.textContent = `${parseFloat(val).toFixed(decimals)}${unit}`;
+      } else {
+        el.textContent = '—';
+      }
     };
-    set('feat-rr',  'rr_interval',   ' ms');
-    set('feat-qrs', 'qrs_duration',  ' ms');
-    set('feat-pr',  'pr_interval',   ' ms');
-    set('feat-qt',  'qt_interval',   ' ms');
-    set('feat-st',  'st_elevation',  ' mV');
+    set('feat-rr-mean',  'rr_mean',       ' ms', 1);
+    set('feat-rr-std',   'rr_std',        ' ms', 1);
+    set('feat-sdnn',     'sdnn',          ' ms', 1);
+    set('feat-rmssd',    'rmssd',         ' ms', 1);
+    set('feat-beat-var', 'beat_variance', ' ms²', 0);
+    set('feat-sqi',      'sqi',           '',    2);
 
-    // HR from features or prediction
-    const hr = features.heart_rate || features.hr;
-    if (hr != null) document.getElementById('hr-display').innerHTML = `${Math.round(hr)}<span class="unit">bpm</span>`;
+    // HR from features
+    const hr = features.heart_rate;
+    if (hr != null && hr > 0) {
+      document.getElementById('hr-display').innerHTML = `${Math.round(hr)}<span class="unit">bpm</span>`;
+    }
   }
 
   // ── Patient ────────────────────────────────────────────────────────
