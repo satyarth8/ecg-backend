@@ -596,6 +596,31 @@ def admin_assign_patient():
     return jsonify({"ok": True}), 200
 
 
+@app.route("/api/admin/release-patient", methods=["POST"])
+@require_jwt("admin")
+def admin_release_patient():
+    """
+    POST /api/admin/release-patient
+    Body: {"patient_id": "<ObjectId>"}
+    Clears the patient's assigned_room so the room can be given to another patient.
+    """
+    data           = request.get_json() or {}
+    patient_id_str = data.get("patient_id", "")
+    try:
+        patient_oid = _oid(patient_id_str)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    result = get_col("patients").update_one(
+        {"_id": patient_oid},
+        {"$set": {"assigned_room": None}},
+    )
+    if result.matched_count == 0:
+        return jsonify({"error": "Patient not found"}), 404
+
+    return jsonify({"ok": True}), 200
+
+
 @app.route("/api/admin/assign-doctor", methods=["POST"])
 @require_jwt("admin")
 def admin_assign_doctor():
