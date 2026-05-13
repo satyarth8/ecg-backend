@@ -332,7 +332,7 @@ def doctor_patients():
         ]
     }))
 
-    return jsonify([_serialize(p) for p in patients]), 200
+    return jsonify({"patients": [_serialize(p) for p in patients]}), 200
 
 
 @app.route("/api/patients/<patient_id>/ecg-history", methods=["GET"])
@@ -363,11 +363,11 @@ def ecg_history(patient_id: str):
     total = get_col("ecg_summaries").count_documents({"patient_id": patient_oid})
 
     return jsonify({
-        "data":    docs,
-        "total":   total,
-        "page":    page,
-        "limit":   limit,
-        "pages":   (total + limit - 1) // limit,
+        "summaries": docs,
+        "total":     total,
+        "page":      page,
+        "limit":     limit,
+        "pages":     (total + limit - 1) // limit,
     }), 200
 
 
@@ -397,7 +397,7 @@ def get_alerts():
         .sort("timestamp", -1)
         .limit(100)
     )
-    return jsonify([_serialize(a) for a in alerts]), 200
+    return jsonify({"alerts": [_serialize(a) for a in alerts]}), 200
 
 
 @app.route("/api/alerts/<alert_id>/acknowledge", methods=["POST"])
@@ -497,8 +497,46 @@ def admin_create_user():
     except DuplicateKeyError:
         return jsonify({"error": f"Email already exists: {email}"}), 409
 
+    user_oid = result.inserted_id
+
+    # Auto-create patient record so assign-patient works immediately
+    if role == "patient":
+        get_col("patients").insert_one({
+            "user_id":          user_oid,
+            "name":             username,
+            "dob":              None,
+            "assigned_room":    None,
+            "assigned_doctors": [],
+            "assigned_nurses":  [],
+            "created_at":       datetime.now(timezone.utc),
+        })
+
     log.info(f"Admin created user: {email} (role={role})")
-    return jsonify({"ok": True, "user_id": str(result.inserted_id)}), 201
+    return jsonify({"ok": True, "user_id": str(user_oid)}), 201
+
+
+@app.route("/api/admin/users", methods=["GET"])
+@require_jwt("admin")
+def admin_list_users():
+    """GET /api/admin/users — list all users (admin only)."""
+    users = list(get_col("users").find({}, {"password_hash": 0}))
+    return jsonify({"users": [_serialize(u) for u in users]}), 200
+
+
+@app.route("/api/admin/devices", methods=["GET"])
+@require_jwt("admin")
+def admin_list_devices():
+    """GET /api/admin/devices — list all registered RPi devices."""
+    devices = list(get_col("devices").find({}))
+    return jsonify({"devices": [_serialize(d) for d in devices]}), 200
+
+
+@app.route("/api/admin/patients", methods=["GET"])
+@require_jwt("admin")
+def admin_list_patients():
+    """GET /api/admin/patients — list all patients."""
+    patients = list(get_col("patients").find({}))
+    return jsonify({"patients": [_serialize(p) for p in patients]}), 200
 
 
 @app.route("/api/admin/assign-device", methods=["POST"])
